@@ -36,22 +36,30 @@ const targets = {
 
 if (fs.existsSync(HISTORY_FILE)) {
   try {
-    const json = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf-8"));
-	Object.keys(json.targets).forEach(ip => {
-		if (targets[ip]) {
+    const fileContent = fs.readFileSync(HISTORY_FILE, "utf-8").trim();
+    
+    // Skip if file is empty
+    if (!fileContent) {
+      console.log("History file is empty, starting fresh");
+    } else {
+    	const json = JSON.parse(fileContent);
+		Object.keys(json.targets).forEach(ip => {
+			if (targets[ip]) {
 			targets[ip] = { ...targets[ip], ...json.targets[ip] };
 			targets[ip].lastSeq = targets[ip].historyData.length 
-			? targets[ip].historyData[targets[ip].historyData.length-1].seq 
-			: null;
+				? targets[ip].historyData[targets[ip].historyData.length-1].seq 
+				: null;
 			// Set offset to continue sequence after restart
 			if (targets[ip].lastSeq !== null) {
 				targets[ip].seqOffset = targets[ip].lastSeq;
 			}
-		}
-	});
-    console.log(`Loaded history from history.json`);
+			}
+		});
+		console.log(`Loaded history from history.json`);
+    }
   } catch (e) {
-    console.error("Error reading history file:", e);
+    console.error("Error reading history file:", e.message);
+    console.log("Starting with empty history");
   }
 }
 
