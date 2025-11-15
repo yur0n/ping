@@ -7,7 +7,7 @@ COPY . .
 RUN npm i
 
 RUN mkdir -p /app && touch /app/aggregated.json
-RUN chmod 666 /app/history.json
+RUN chmod 666 /app/aggregated.json
 
 EXPOSE 5050
 
