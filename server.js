@@ -5,9 +5,9 @@ const fs = require("fs");
 const path = require("path");
 
 const app = express();
-const PORT = 5050;
+const PORT = process.env.PORT || 5050;
 app.use(express.static("public"));
-const server = app.listen(PORT, () => console.log(`http://localhost:${PORT}`));
+const server = app.listen(PORT, () => console.log(`running on port ${PORT}`));
 const wss = new WebSocket.Server({ server });
 
 const HISTORY_FILE = path.join(__dirname, "history.json");
@@ -37,34 +37,18 @@ const targets = {
 if (fs.existsSync(HISTORY_FILE)) {
   try {
     const json = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf-8"));
-    if (json.targets) {
-      Object.keys(json.targets).forEach(ip => {
-        if (targets[ip]) {
-          targets[ip] = { ...targets[ip], ...json.targets[ip] };
-          targets[ip].lastSeq = targets[ip].historyData.length 
-            ? targets[ip].historyData[targets[ip].historyData.length-1].seq 
-            : null;
-          // Set offset to continue sequence after restart
-          if (targets[ip].lastSeq !== null) {
-            targets[ip].seqOffset = targets[ip].lastSeq;
-          }
-        }
-      });
-    } else {
-      // Legacy format - migrate to new format
-      if (json.historyData) {
-        targets["1.1.1.1"].historyData = json.historyData || [];
-        targets["1.1.1.1"].gaps = json.gaps || [];
-        targets["1.1.1.1"].received = json.received || 0;
-        targets["1.1.1.1"].lost = json.lost || 0;
-        targets["1.1.1.1"].lastSeq = targets["1.1.1.1"].historyData.length 
-          ? targets["1.1.1.1"].historyData[targets["1.1.1.1"].historyData.length-1].seq 
-          : null;
-        if (targets["1.1.1.1"].lastSeq !== null) {
-          targets["1.1.1.1"].seqOffset = targets["1.1.1.1"].lastSeq;
-        }
-      }
-    }
+	Object.keys(json.targets).forEach(ip => {
+		if (targets[ip]) {
+			targets[ip] = { ...targets[ip], ...json.targets[ip] };
+			targets[ip].lastSeq = targets[ip].historyData.length 
+			? targets[ip].historyData[targets[ip].historyData.length-1].seq 
+			: null;
+			// Set offset to continue sequence after restart
+			if (targets[ip].lastSeq !== null) {
+				targets[ip].seqOffset = targets[ip].lastSeq;
+			}
+		}
+	});
     console.log(`Loaded history from history.json`);
   } catch (e) {
     console.error("Error reading history file:", e);
