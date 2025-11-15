@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Live Ping Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    body { background:#111; color:white; font-family:sans-serif; }
+    #stats { margin:10px 0; font-size:16px; }
+    table { color:white; border-collapse: collapse; width: 100%; font-size:14px; }
+    td,th { border:1px solid #444; padding:2px 6px; }
+    canvas { max-height:250px; margin-bottom:20px; }
+  </style>
+</head>
+<body>
+<h1>Live Ping Monitor</h1>
+
+<h2>1.1.1.1 - Last 10 minutes</h2>
+<canvas id="chart10min"></canvas>
+
+<h2>1.1.1.1 - Historical Chart</h2>
+<canvas id="chartHistory"></canvas>
+
+<h2>192.168.1.1 - Historical Chart</h2>
+<canvas id="chartHistory2"></canvas>
+
+<div id="stats">loading…</div>
+
+<h2>Gaps - 1.1.1.1</h2>
+<table id="gapsTable">
+<tr><th>from</th><th>to</th><th>count</th></tr>
+</table>
+
+<h2>Gaps - 192.168.1.1</h2>
+<table id="gapsTable2">
+<tr><th>from</th><th>to</th><th>count</th></tr>
+</table>
+
+<script>
+const ws = new WebSocket(`ws://${location.host}`);
+
+const maxWindowMs = 10*60*1000; // 10 minutes
+const targets = {
+  "1.1.1.1": {
+    last10minData: [],
+    historyData: [],
+    gaps: [],
+    received: 0,
+    lost: 0,
+    avgRtt: 0
+  },
+  "192.168.1.1": {
+    last10minData: [],
+    historyData: [],
+    gaps: [],
+    received: 0,
+    lost: 0,
+    avgRtt: 0
+  }
+};
+
+const ctx10 = document.getElementById("chart10min").getContext("2d");
+const ctxHist = document.getElementById("chartHistory").getContext("2d");
+const ctxHist2 = document.getElementById("chartHistory2").getContext("2d");
+
+const chart10 = new Chart(ctx10, {
+  type: "line",
+  data: { labels: [], datasets:[{label:"RTT (ms)", data:[], borderColor:"aqua", pointRadius:0}] },
+  options: { animation:false, scales:{x:{ticks:{color:"white"}}, y:{ticks:{color:"white"}}} }
+});
+
+const chartHist = new Chart(ctxHist, {
+  type: "line",
+  data: { labels: [], datasets:[{label:"RTT (ms)", data:[], borderColor:"yellow", pointRadius:0}] },
+  options: { animation:false, scales:{x:{ticks:{color:"white"}}, y:{ticks:{color:"white"}}} }
+});
+
+const chartHist2 = new Chart(ctxHist2, {
+  type: "line",
+  data: { labels: [], datasets:[{label:"RTT (ms)", data:[], borderColor:"orange", pointRadius:0}] },
+  options: { animation:false, scales:{x:{ticks:{color:"white"}}, y:{ticks:{color:"white"}}} }
+});
+
+function updateCharts(targetIp, point) {
+  const target = targets[targetIp];
+  if (!target) return;
+
+  // Skip null RTT values (lost packets) for charts
+  if (point.rtt === null || point.rtt === undefined) return;
+
+  // historical chart
+  if (targetIp === "1.1.1.1") {
+    chartHist.data.labels.push(point.seq);
+    chartHist.data.datasets[0].data.push(point.rtt);
+    chartHist.update();
+
+    // 10 minute sliding window for 1.1.1.1
+    target.last10minData.push(point);
+    const now = Date.now();
+    target.last10minData = target.last10minData.filter(p=>!p.timestamp || now - p.timestamp <= maxWindowMs);
+
+    chart10.data.labels = target.last10minData.map(p=>p.seq);
+    chart10.data.datasets[0].data = target.last10minData.map(p=>p.rtt);
+    chart10.update();
+  } else if (targetIp === "192.168.1.1") {
+    chartHist2.data.labels.push(point.seq);
+    chartHist2.data.datasets[0].data.push(point.rtt);
+    chartHist2.update();
+  }
+}
+
+ws.onmessage = (msg)=>{
+  const data = JSON.parse(msg.data);
+
+  if(data.type==="history"){
+    if (data.targets) {
+      Object.keys(data.targets).forEach(ip => {
+        const targetData = data.targets[ip];
+        targets[ip].historyData = targetData.historyData || [];
+        targets[ip].gaps = targetData.gaps || [];
+        targets[ip].received = targetData.received || 0;
+        targets[ip].lost = targetData.lost || 0;
+        targets[ip].avgRtt = targetData.avgRtt || 0;
+        
+        targetData.historyData.forEach(point => updateCharts(ip, point));
+      });
+    } else {
+      // Legacy format
+      targets["1.1.1.1"].historyData = data.historyData || [];
+      targets["1.1.1.1"].gaps = data.gaps || [];
+      targets["1.1.1.1"].received = data.received || 0;
+      targets["1.1.1.1"].lost = data.lost || 0;
+      targets["1.1.1.1"].avgRtt = 0;
+      targets["1.1.1.1"].historyData.forEach(point => updateCharts("1.1.1.1", point));
+    }
+    updateTable();
+    updateStats();
+    return;
+  }
+
+  if(data.point && data.target) {
+    updateCharts(data.target, data.point);
+    targets[data.target].gaps = data.gaps || [];
+    targets[data.target].received = data.received || 0;
+    targets[data.target].lost = data.lost || 0;
+    if (data.avgRtt !== undefined) {
+      targets[data.target].avgRtt = data.avgRtt;
+    }
+    updateTable();
+    updateStats();
+  }
+};
+
+function updateStats(){
+  const t1 = targets["1.1.1.1"];
+  const t2 = targets["192.168.1.1"];
+  document.getElementById("stats").innerHTML =
+    `<strong>1.1.1.1:</strong> Received: ${t1.received} | Lost: ${t1.lost} | Loss: ${(t1.lost/(t1.received+t1.lost)*100).toFixed(2)}% | Avg RTT: ${t1.avgRtt} ms<br>` +
+    `<strong>192.168.1.1:</strong> Received: ${t2.received} | Lost: ${t2.lost} | Loss: ${(t2.lost/(t2.received+t2.lost)*100).toFixed(2)}% | Avg RTT: ${t2.avgRtt} ms`;
+}
+
+function updateTable(){
+  const gapsTable = document.getElementById("gapsTable");
+  gapsTable.innerHTML="<tr><th>from</th><th>to</th><th>count</th></tr>";
+  targets["1.1.1.1"].gaps.forEach(g=>{
+    gapsTable.innerHTML+=`<tr><td>${g.from}</td><td>${g.to}</td><td>${g.count}</td></tr>`;
+  });
+  
+  const gapsTable2 = document.getElementById("gapsTable2");
+  gapsTable2.innerHTML="<tr><th>from</th><th>to</th><th>count</th></tr>";
+  targets["192.168.1.1"].gaps.forEach(g=>{
+    gapsTable2.innerHTML+=`<tr><td>${g.from}</td><td>${g.to}</td><td>${g.count}</td></tr>`;
+  });
+}
+</script>
+</body>
+</html>
