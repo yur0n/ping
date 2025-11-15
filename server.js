@@ -1,12 +1,9 @@
 const { spawn } = require("child_process");
-const express = require("express");
+const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const app = express();
 const PORT = process.env.PORT || 5050;
-app.use(express.static("public"));
-const server = app.listen(PORT, () => console.log(`running on port ${PORT}`));
 
 // SSE clients storage
 const sseClients = new Set();
@@ -310,41 +307,101 @@ function getCombinedHistoryData(target) {
   return combined;
 }
 
-// ===== SSE endpoint =====
-app.get("/events", (req, res) => {
-  // Set SSE headers
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("Access-Control-Allow-Origin", "*");
+// ===== HTTP server =====
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const pathname = url.pathname;
 
-  // Add client to set
-  sseClients.add(res);
+  // SSE endpoint
+  if (pathname === "/events") {
+    // Set SSE headers
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("Access-Control-Allow-Origin", "*");
 
-  // Send initial history (combined recent + aggregated)
-  res.write(`data: ${JSON.stringify({ 
-    type: "history", 
-    targets: {
-      "1.1.1.1": {
-        historyData: getCombinedHistoryData(targets["1.1.1.1"]),
-        gaps: targets["1.1.1.1"].gaps,
-        received: targets["1.1.1.1"].received,
-        lost: targets["1.1.1.1"].lost,
-        avgRtt: calculateAvgRtt(targets["1.1.1.1"])
-      },
-      "192.168.1.1": {
-        historyData: getCombinedHistoryData(targets["192.168.1.1"]),
-        gaps: targets["192.168.1.1"].gaps,
-        received: targets["192.168.1.1"].received,
-        lost: targets["192.168.1.1"].lost,
-        avgRtt: calculateAvgRtt(targets["192.168.1.1"])
+    // Add client to set
+    sseClients.add(res);
+
+    // Send initial history (combined recent + aggregated)
+    res.write(`data: ${JSON.stringify({ 
+      type: "history", 
+      targets: {
+        "1.1.1.1": {
+          historyData: getCombinedHistoryData(targets["1.1.1.1"]),
+          gaps: targets["1.1.1.1"].gaps,
+          received: targets["1.1.1.1"].received,
+          lost: targets["1.1.1.1"].lost,
+          avgRtt: calculateAvgRtt(targets["1.1.1.1"])
+        },
+        "192.168.1.1": {
+          historyData: getCombinedHistoryData(targets["192.168.1.1"]),
+          gaps: targets["192.168.1.1"].gaps,
+          received: targets["192.168.1.1"].received,
+          lost: targets["192.168.1.1"].lost,
+          avgRtt: calculateAvgRtt(targets["192.168.1.1"])
+        }
+      }
+    })}\n\n`);
+
+    // Handle client disconnect
+    req.on("close", () => {
+      sseClients.delete(res);
+      res.end();
+    });
+    return;
+  }
+
+  // Serve static files from public directory
+  let filePath = path.join(__dirname, "public", pathname === "/" ? "index.html" : pathname);
+  
+  // Security: prevent directory traversal
+  const publicDir = path.join(__dirname, "public");
+  if (!filePath.startsWith(publicDir)) {
+    res.writeHead(403, { "Content-Type": "text/plain" });
+    res.end("Forbidden");
+    return;
+  }
+
+  // Check if file exists
+  fs.stat(filePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      // If not found, try index.html
+      if (pathname !== "/") {
+        filePath = path.join(__dirname, "public", "index.html");
+      } else {
+        res.writeHead(404, { "Content-Type": "text/plain" });
+        res.end("Not Found");
+        return;
       }
     }
-  })}\n\n`);
 
-  // Handle client disconnect
-  req.on("close", () => {
-    sseClients.delete(res);
-    res.end();
+    // Determine content type
+    const ext = path.extname(filePath).toLowerCase();
+    const contentTypes = {
+      ".html": "text/html",
+      ".js": "text/javascript",
+      ".css": "text/css",
+      ".json": "application/json",
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".gif": "image/gif",
+      ".svg": "image/svg+xml",
+      ".ico": "image/x-icon"
+    };
+    const contentType = contentTypes[ext] || "application/octet-stream";
+
+    // Read and serve file
+    fs.readFile(filePath, (err, data) => {
+      if (err) {
+        res.writeHead(500, { "Content-Type": "text/plain" });
+        res.end("Internal Server Error");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(data);
+    });
   });
 });
+
+server.listen(PORT, () => console.log(`running on port ${PORT}`));
