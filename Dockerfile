@@ -6,7 +6,7 @@ WORKDIR /app
 COPY . .
 RUN npm i
 
-RUN mkdir -p /app && touch /app/history.json
+RUN mkdir -p /app && touch /app/recent.json && touch /app/aggregated.json
 RUN chmod 666 /app/history.json
 
 EXPOSE 5050

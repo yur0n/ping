@@ -11,83 +11,164 @@ const server = app.listen(PORT, () => console.log(`running on port ${PORT}`));
 // SSE clients storage
 const sseClients = new Set();
 
-const HISTORY_FILE = path.join(__dirname, "history.json");
+const AGGREGATED_FILE = path.join(__dirname, "aggregated.json"); // Aggregated by 10 minutes
 
-// ===== Load history from file =====
+// ===== Load history from files =====
 const targets = {
   "1.1.1.1": {
-    historyData: [],
+    recentData: [], // Last 10 minutes (sliding window)
+    aggregatedData: [], // Aggregated by 30 minutes
     gaps: [],
     received: 0,
     lost: 0,
     lastSeq: null,
     seqOffset: 0,
-    firstPingReceived: false
+    firstPingReceived: false,
+    lastAggregationTime: null // Track last aggregation timestamp
   },
   "192.168.1.1": {
-    historyData: [],
+    recentData: [],
+    aggregatedData: [],
     gaps: [],
     received: 0,
     lost: 0,
     lastSeq: null,
     seqOffset: 0,
-    firstPingReceived: false
+    firstPingReceived: false,
+    lastAggregationTime: null
   }
 };
 
-if (fs.existsSync(HISTORY_FILE)) {
+if (fs.existsSync(AGGREGATED_FILE)) {
   try {
-    const fileContent = fs.readFileSync(HISTORY_FILE, "utf-8").trim();
-    
-    // Skip if file is empty
-    if (!fileContent) {
-      console.log("History file is empty, starting fresh");
-    } else {
-    	const json = JSON.parse(fileContent);
-		Object.keys(json.targets).forEach(ip => {
-			if (targets[ip]) {
-			targets[ip] = { ...targets[ip], ...json.targets[ip] };
-			targets[ip].lastSeq = targets[ip].historyData.length 
-				? targets[ip].historyData[targets[ip].historyData.length-1].seq 
-				: null;
-			// Set offset to continue sequence after restart
-			if (targets[ip].lastSeq !== null) {
-				targets[ip].seqOffset = targets[ip].lastSeq;
-			}
-			}
-		});
-		console.log(`Loaded history from history.json`);
+    const fileContent = fs.readFileSync(AGGREGATED_FILE, "utf-8").trim();
+    if (fileContent) {
+      const json = JSON.parse(fileContent);
+      Object.keys(json.targets || {}).forEach(ip => {
+        if (targets[ip]) {
+          targets[ip].aggregatedData = json.targets[ip].aggregatedData || [];
+          targets[ip].gaps = json.targets[ip].gaps || [];
+          targets[ip].received = json.targets[ip].received || 0;
+          targets[ip].lost = json.targets[ip].lost || 0;
+          
+          if (targets[ip].aggregatedData.length > 0) {
+            const lastAgg = targets[ip].aggregatedData[targets[ip].aggregatedData.length - 1];
+            targets[ip].lastAggregationTime = lastAgg.timestamp;
+            // Set lastSeq from last aggregated point
+            targets[ip].lastSeq = lastAgg.seq;
+            targets[ip].seqOffset = lastAgg.seq;
+          }
+        }
+      });
+      console.log(`Loaded aggregated data from aggregated.json`);
     }
   } catch (e) {
-    console.error("Error reading history file:", e.message);
-    console.log("Starting with empty history");
+    console.error("Error reading aggregated file:", e.message);
   }
 }
 
-// ===== Save history to file periodically =====
-function saveHistory() {
-  const data = { 
+// ===== Aggregate and save to aggregated file (every 10 minutes) =====
+function aggregateAndSave() {
+  const now = Date.now();
+  const aggregationInterval = 10 * 60 * 1000; // 10 minutes
+  
+  Object.keys(targets).forEach(ip => {
+    const target = targets[ip];
+    
+    // Round down to nearest 10-minute interval
+    // If now is 10:15, we aggregate data from 10:00-10:10 (the interval that just ended)
+    const currentIntervalStart = Math.floor(now / aggregationInterval) * aggregationInterval;
+    const previousIntervalStart = currentIntervalStart - aggregationInterval;
+    const previousIntervalEnd = currentIntervalStart;
+    
+    // Filter data that belongs to the previous interval (the one we're aggregating)
+    const dataToAggregate = target.recentData.filter(p => 
+      p.timestamp && p.timestamp >= previousIntervalStart && p.timestamp < previousIntervalEnd
+    );
+    
+    if (dataToAggregate.length === 0) {
+      // No data to aggregate, but still clear old data
+      target.recentData = target.recentData.filter(p => 
+        !p.timestamp || p.timestamp >= currentIntervalStart
+      );
+      return;
+    }
+    
+    // Check if this interval already exists
+    const exists = target.aggregatedData.some(agg => agg.timestamp === previousIntervalStart);
+    if (exists) {
+      // If interval exists, update it with new data
+      const existingIndex = target.aggregatedData.findIndex(agg => agg.timestamp === previousIntervalStart);
+      const existing = target.aggregatedData[existingIndex];
+      
+      // Combine existing aggregated data with new recent data
+      const allRtts = [];
+      if (existing.rtt !== null && existing.rtt !== undefined) {
+        allRtts.push(existing.rtt);
+      }
+      dataToAggregate.forEach(point => {
+        if (point.rtt !== null && point.rtt !== undefined) {
+          allRtts.push(point.rtt);
+        }
+      });
+      
+      target.aggregatedData[existingIndex] = {
+        seq: dataToAggregate[0]?.seq || existing.seq,
+        rtt: allRtts.length > 0 
+          ? Number((allRtts.reduce((a, b) => a + b, 0) / allRtts.length).toFixed(2))
+          : null,
+        timestamp: previousIntervalStart,
+        aggregated: true
+      };
+    } else {
+      // Create new aggregated point
+      const validRtts = dataToAggregate
+        .filter(p => p.rtt !== null && p.rtt !== undefined)
+        .map(p => p.rtt);
+      
+      target.aggregatedData.push({
+        seq: dataToAggregate[0]?.seq || target.lastSeq || 0,
+        rtt: validRtts.length > 0 
+          ? Number((validRtts.reduce((a, b) => a + b, 0) / validRtts.length).toFixed(2))
+          : null,
+        timestamp: previousIntervalStart,
+        aggregated: true
+      });
+      target.aggregatedData.sort((a, b) => a.timestamp - b.timestamp);
+    }
+    
+    // Clear aggregated data from recentData (keep only data from current interval)
+    target.recentData = target.recentData.filter(p => 
+      !p.timestamp || p.timestamp >= currentIntervalStart
+    );
+    target.lastAggregationTime = previousIntervalStart;
+  });
+  
+  // Save aggregated data with stats
+  const aggregatedData = {
     targets: {
       "1.1.1.1": {
-        historyData: targets["1.1.1.1"].historyData,
+        aggregatedData: targets["1.1.1.1"].aggregatedData,
         gaps: targets["1.1.1.1"].gaps,
         received: targets["1.1.1.1"].received,
         lost: targets["1.1.1.1"].lost
       },
       "192.168.1.1": {
-        historyData: targets["192.168.1.1"].historyData,
+        aggregatedData: targets["192.168.1.1"].aggregatedData,
         gaps: targets["192.168.1.1"].gaps,
         received: targets["192.168.1.1"].received,
         lost: targets["192.168.1.1"].lost
       }
     }
   };
-  fs.writeFile(HISTORY_FILE, JSON.stringify(data), err => {
-    if (err) console.error("Error saving history:", err);
+  fs.writeFile(AGGREGATED_FILE, JSON.stringify(aggregatedData), err => {
+    if (err) console.error("Error saving aggregated data:", err);
+    else console.log("Aggregated and saved data to aggregated.json");
   });
 }
-// Save every 10 seconds
-setInterval(saveHistory, 10000);
+
+// Aggregate and save every 10 minutes
+setInterval(aggregateAndSave, 10 * 60 * 1000);
 
 // ===== Ping logic =====
 const ping1 = spawn("ping", ["1.1.1.1"]);
@@ -137,10 +218,15 @@ function handlePingData(ip, data) {
     target.received++;
 
     const point = { seq, rtt, timestamp: now };
-    target.historyData.push(point);
+    target.recentData.push(point);
+    
+    // Keep only last 10 minutes in memory (sliding window)
+    const tenMinutesAgo = now - 10 * 60 * 1000;
+    target.recentData = target.recentData.filter(p => !p.timestamp || p.timestamp >= tenMinutesAgo);
 
-    // Calculate average RTT
-    const validRtts = target.historyData.filter(p => p.rtt !== null && p.rtt !== undefined).map(p => p.rtt);
+    // Calculate average RTT from all data (recent + aggregated)
+    const allData = [...target.aggregatedData, ...target.recentData];
+    const validRtts = allData.filter(p => p.rtt !== null && p.rtt !== undefined).map(p => p.rtt);
     const avgRtt = validRtts.length > 0 
       ? (validRtts.reduce((a, b) => a + b, 0) / validRtts.length).toFixed(2)
       : 0;
@@ -176,10 +262,15 @@ function handlePingData(ip, data) {
     target.lost++;
     target.gaps.push({ from: seq, to: seq, count: 1 });
     target.lastSeq = seq;
-    target.historyData.push({ seq, rtt: null, timestamp: now });
+    target.recentData.push({ seq, rtt: null, timestamp: now });
+    
+    // Keep only last 10 minutes in memory (sliding window)
+    const tenMinutesAgo = now - 10 * 60 * 1000;
+    target.recentData = target.recentData.filter(p => !p.timestamp || p.timestamp >= tenMinutesAgo);
 
-    // Calculate average RTT
-    const validRtts = target.historyData.filter(p => p.rtt !== null && p.rtt !== undefined).map(p => p.rtt);
+    // Calculate average RTT from all data (recent + aggregated)
+    const allData = [...target.aggregatedData, ...target.recentData];
+    const validRtts = allData.filter(p => p.rtt !== null && p.rtt !== undefined).map(p => p.rtt);
     const avgRtt = validRtts.length > 0 
       ? (validRtts.reduce((a, b) => a + b, 0) / validRtts.length).toFixed(2)
       : 0;
@@ -201,11 +292,22 @@ ping1.stdout.on("data", (data) => handlePingData("1.1.1.1", data));
 ping2.stdout.on("data", (data) => handlePingData("192.168.1.1", data));
 
 // ===== Calculate average RTT helper =====
-function calculateAvgRtt(historyData) {
-  const validRtts = historyData.filter(p => p.rtt !== null && p.rtt !== undefined).map(p => p.rtt);
+function calculateAvgRtt(target) {
+  const allData = [...target.aggregatedData, ...target.recentData];
+  const validRtts = allData.filter(p => p.rtt !== null && p.rtt !== undefined).map(p => p.rtt);
   return validRtts.length > 0 
     ? (validRtts.reduce((a, b) => a + b, 0) / validRtts.length).toFixed(2)
     : 0;
+}
+
+// ===== Combine recent and aggregated data for client =====
+function getCombinedHistoryData(target) {
+  // Combine aggregated data + recent data, sorted by timestamp/seq
+  const combined = [...target.aggregatedData, ...target.recentData].sort((a, b) => {
+    if (a.timestamp && b.timestamp) return a.timestamp - b.timestamp;
+    return a.seq - b.seq;
+  });
+  return combined;
 }
 
 // ===== SSE endpoint =====
@@ -219,23 +321,23 @@ app.get("/events", (req, res) => {
   // Add client to set
   sseClients.add(res);
 
-  // Send initial history
+  // Send initial history (combined recent + aggregated)
   res.write(`data: ${JSON.stringify({ 
     type: "history", 
     targets: {
       "1.1.1.1": {
-        historyData: targets["1.1.1.1"].historyData,
+        historyData: getCombinedHistoryData(targets["1.1.1.1"]),
         gaps: targets["1.1.1.1"].gaps,
         received: targets["1.1.1.1"].received,
         lost: targets["1.1.1.1"].lost,
-        avgRtt: calculateAvgRtt(targets["1.1.1.1"].historyData)
+        avgRtt: calculateAvgRtt(targets["1.1.1.1"])
       },
       "192.168.1.1": {
-        historyData: targets["192.168.1.1"].historyData,
+        historyData: getCombinedHistoryData(targets["192.168.1.1"]),
         gaps: targets["192.168.1.1"].gaps,
         received: targets["192.168.1.1"].received,
         lost: targets["192.168.1.1"].lost,
-        avgRtt: calculateAvgRtt(targets["192.168.1.1"].historyData)
+        avgRtt: calculateAvgRtt(targets["192.168.1.1"])
       }
     }
   })}\n\n`);
