@@ -42,8 +42,8 @@ const eventSource = new EventSource("/events");
 const maxWindowMs = 10*60*1000; // 10 minutes
 const targets = {
   "1.1.1.1": {
-    last10minData: [],
-    historyData: [],
+    last10minData: [], // Live data for 10-minute chart
+    aggregatedData: [], // Aggregated data for historical chart
     gaps: [],
     received: 0,
     lost: 0,
@@ -51,7 +51,7 @@ const targets = {
   },
   "192.168.1.1": {
     last10minData: [],
-    historyData: [],
+    aggregatedData: [],
     gaps: [],
     received: 0,
     lost: 0,
@@ -124,25 +124,52 @@ function updateCharts(targetIp, point) {
   // Skip null RTT values (lost packets) for charts
   if (point.rtt === null || point.rtt === undefined) return;
 
-  // historical chart
+  // Only update 10-minute chart with live data (not historical)
   if (targetIp === "1.1.1.1") {
-    chartHist.data.labels.push(point.seq);
-    chartHist.data.datasets[0].data.push(point.rtt);
-    chartHist.update();
-
-    // 10 minute sliding window for 1.1.1.1
+    // Add point to 10-minute data
     target.last10minData.push(point);
     const now = Date.now();
-    target.last10minData = target.last10minData.filter(p=>!p.timestamp || now - p.timestamp <= maxWindowMs);
+    // Keep only last 10 minutes
+    target.last10minData = target.last10minData.filter(p => !p.timestamp || now - p.timestamp <= maxWindowMs);
 
-    chart10.data.labels = target.last10minData.map(p=>p.seq);
-    chart10.data.datasets[0].data = target.last10minData.map(p=>p.rtt);
+    // Update 10-minute chart
+    const valid10minData = target.last10minData.filter(p => p.rtt !== null && p.rtt !== undefined);
+    
+    // Collect all seq numbers including gaps in visible range
+    const allSeqs10 = new Set();
+    valid10minData.forEach(p => allSeqs10.add(p.seq));
+    // Add gaps that are in the visible range
+    if (valid10minData.length > 0) {
+      const minSeq = Math.min(...valid10minData.map(p => p.seq));
+      const maxSeq = Math.max(...valid10minData.map(p => p.seq));
+      target.gaps.forEach(gap => {
+        for (let seq = gap.from; seq <= gap.to; seq++) {
+          if (seq >= minSeq && seq <= maxSeq) {
+            allSeqs10.add(seq);
+          }
+        }
+      });
+    }
+    const sortedSeqs10 = Array.from(allSeqs10).sort((a, b) => a - b);
+    
+    chart10.data.labels = sortedSeqs10;
+    // Fill data array - null for gaps, rtt for valid data
+    chart10.data.datasets[0].data = sortedSeqs10.map(seq => {
+      const point = valid10minData.find(p => p.seq === seq);
+      return point ? point.rtt : null;
+    });
+    
+    // Update gaps visualization
+    const maxRtt10 = Math.max(...chart10.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+    const gapsData10 = sortedSeqs10.map(seq => {
+      // Check if this seq is in a gap
+      const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+      return isGap ? maxRtt10 * 1.1 : null;
+    });
+    chart10.data.datasets[1].data = gapsData10;
     chart10.update();
-  } else if (targetIp === "192.168.1.1") {
-    chartHist2.data.labels.push(point.seq);
-    chartHist2.data.datasets[0].data.push(point.rtt);
-    chartHist2.update();
   }
+  // Historical charts are updated only from aggregated data on history load
 }
 
 eventSource.onmessage = (event)=>{
@@ -152,98 +179,116 @@ eventSource.onmessage = (event)=>{
     if (data.targets) {
       Object.keys(data.targets).forEach(ip => {
         const targetData = data.targets[ip];
-        targets[ip].historyData = targetData.historyData || [];
+        // Store aggregated data for historical charts
+        targets[ip].aggregatedData = targetData.aggregatedData || [];
+        // Store recent data for 10-minute chart
+        targets[ip].last10minData = targetData.recentData || [];
         targets[ip].gaps = targetData.gaps || [];
         targets[ip].received = targetData.received || 0;
         targets[ip].lost = targetData.lost || 0;
         targets[ip].avgRtt = targetData.avgRtt || 0;
       });
       
-      // Optimize: update charts once after loading all history data
-      // For historical charts, add all points at once
+      // Update charts once after loading all history data
       const t1 = targets["1.1.1.1"];
       const t2 = targets["192.168.1.1"];
       
-      // Update 1.1.1.1 historical chart
-      const validT1Data = t1.historyData.filter(p => p.rtt !== null && p.rtt !== undefined);
-      chartHist.data.labels = validT1Data.map(p => p.seq);
-      chartHist.data.datasets[0].data = validT1Data.map(p => p.rtt);
-      // Add gaps visualization
-      const gapsData1 = new Array(chartHist.data.labels.length).fill(null);
+      // Update 1.1.1.1 historical chart - only aggregated data
+      const validT1AggData = t1.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
+      
+      // Collect all seq numbers including gaps
+      const allSeqs = new Set();
+      validT1AggData.forEach(p => allSeqs.add(p.seq));
       t1.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          const index = chartHist.data.labels.indexOf(seq);
-          if (index !== -1) {
-            gapsData1[index] = 0;
-          }
+          allSeqs.add(seq);
         }
       });
-      chartHist.data.datasets[1].data = gapsData1;
-      chartHist.update('none'); // 'none' mode = no animation for faster rendering
+      const sortedSeqs = Array.from(allSeqs).sort((a, b) => a - b);
       
-      // Update 192.168.1.1 historical chart
-      const validT2Data = t2.historyData.filter(p => p.rtt !== null && p.rtt !== undefined);
-      chartHist2.data.labels = validT2Data.map(p => p.seq);
-      chartHist2.data.datasets[0].data = validT2Data.map(p => p.rtt);
+      chartHist.data.labels = sortedSeqs;
+      // Fill data array - null for gaps, rtt for valid data
+      chartHist.data.datasets[0].data = sortedSeqs.map(seq => {
+        const point = validT1AggData.find(p => p.seq === seq);
+        return point ? point.rtt : null;
+      });
+      
       // Add gaps visualization
-      const gapsData2 = new Array(chartHist2.data.labels.length).fill(null);
+      const maxRtt1 = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsData1 = sortedSeqs.map(seq => {
+        // Check if this seq is in a gap
+        const isGap = t1.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+        return isGap ? maxRtt1 * 1.1 : null;
+      });
+      chartHist.data.datasets[1].data = gapsData1;
+      chartHist.update('none');
+      
+      // Update 192.168.1.1 historical chart - only aggregated data
+      const validT2AggData = t2.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
+      
+      // Collect all seq numbers including gaps
+      const allSeqs2 = new Set();
+      validT2AggData.forEach(p => allSeqs2.add(p.seq));
       t2.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          const index = chartHist2.data.labels.indexOf(seq);
-          if (index !== -1) {
-            gapsData2[index] = 0;
-          }
+          allSeqs2.add(seq);
         }
+      });
+      const sortedSeqs2 = Array.from(allSeqs2).sort((a, b) => a - b);
+      
+      chartHist2.data.labels = sortedSeqs2;
+      // Fill data array - null for gaps, rtt for valid data
+      chartHist2.data.datasets[0].data = sortedSeqs2.map(seq => {
+        const point = validT2AggData.find(p => p.seq === seq);
+        return point ? point.rtt : null;
+      });
+      
+      // Add gaps visualization
+      const maxRtt2 = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsData2 = sortedSeqs2.map(seq => {
+        // Check if this seq is in a gap
+        const isGap = t2.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+        return isGap ? maxRtt2 * 1.1 : null;
       });
       chartHist2.data.datasets[1].data = gapsData2;
       chartHist2.update('none');
       
-      // Update 10-minute window for 1.1.1.1
-      // Only show non-aggregated data (full points) for last 10 minutes
-      const now = Date.now();
-      t1.last10minData = t1.historyData.filter(p => 
-        !p.aggregated && (!p.timestamp || now - p.timestamp <= maxWindowMs)
-      );
+      // Update 10-minute window for 1.1.1.1 - only recent live data
       const valid10minData = t1.last10minData.filter(p => p.rtt !== null && p.rtt !== undefined);
-      chart10.data.labels = valid10minData.map(p => p.seq);
-      chart10.data.datasets[0].data = valid10minData.map(p => p.rtt);
-      // Add gaps visualization for 10-minute window
-      const gapsData10 = new Array(chart10.data.labels.length).fill(null);
-      t1.gaps.forEach(gap => {
-        for (let seq = gap.from; seq <= gap.to; seq++) {
-          const index = chart10.data.labels.indexOf(seq);
-          if (index !== -1) {
-            gapsData10[index] = 0;
+      
+      // Collect all seq numbers including gaps in visible range
+      const allSeqs10 = new Set();
+      valid10minData.forEach(p => allSeqs10.add(p.seq));
+      // Add gaps that are in the visible range
+      if (valid10minData.length > 0) {
+        const minSeq = Math.min(...valid10minData.map(p => p.seq));
+        const maxSeq = Math.max(...valid10minData.map(p => p.seq));
+        t1.gaps.forEach(gap => {
+          for (let seq = gap.from; seq <= gap.to; seq++) {
+            if (seq >= minSeq && seq <= maxSeq) {
+              allSeqs10.add(seq);
+            }
           }
-        }
+        });
+      }
+      const sortedSeqs10 = Array.from(allSeqs10).sort((a, b) => a - b);
+      
+      chart10.data.labels = sortedSeqs10;
+      // Fill data array - null for gaps, rtt for valid data
+      chart10.data.datasets[0].data = sortedSeqs10.map(seq => {
+        const point = valid10minData.find(p => p.seq === seq);
+        return point ? point.rtt : null;
+      });
+      
+      // Add gaps visualization
+      const maxRtt10 = Math.max(...chart10.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsData10 = sortedSeqs10.map(seq => {
+        // Check if this seq is in a gap
+        const isGap = t1.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+        return isGap ? maxRtt10 * 1.1 : null;
       });
       chart10.data.datasets[1].data = gapsData10;
       chart10.update('none');
-    } else {
-      // Legacy format
-      targets["1.1.1.1"].historyData = data.historyData || [];
-      targets["1.1.1.1"].gaps = data.gaps || [];
-      targets["1.1.1.1"].received = data.received || 0;
-      targets["1.1.1.1"].lost = data.lost || 0;
-      targets["1.1.1.1"].avgRtt = 0;
-      
-      // Update chart once for legacy format
-      const t1 = targets["1.1.1.1"];
-      const validT1Data = t1.historyData.filter(p => p.rtt !== null && p.rtt !== undefined);
-      chartHist.data.labels = validT1Data.map(p => p.seq);
-      chartHist.data.datasets[0].data = validT1Data.map(p => p.rtt);
-      // Add gaps visualization
-      const gapsData1 = new Array(chartHist.data.labels.length).fill(null);
-      t1.gaps.forEach(gap => {
-        for (let seq = gap.from; seq <= gap.to; seq++) {
-          const index = chartHist.data.labels.indexOf(seq);
-          if (index !== -1) {
-            gapsData1[index] = 0;
-          }
-        }
-      });
-      chartHist.data.datasets[1].data = gapsData1;
-      chartHist.update('none');
     }
     updateTable();
     updateStats();
@@ -258,7 +303,7 @@ eventSource.onmessage = (event)=>{
     if (data.avgRtt !== undefined) {
       targets[data.target].avgRtt = data.avgRtt;
     }
-    // Update gaps visualization on charts
+    // Update gaps visualization on historical charts
     updateGapsOnCharts(data.target);
     updateTable();
     updateStats();
@@ -283,44 +328,41 @@ function updateGapsOnCharts(targetIp) {
   if (!target) return;
   
   if (targetIp === "1.1.1.1") {
-    // Update historical chart gaps
-    const gapsDataHist = new Array(chartHist.data.labels.length).fill(null);
-    target.gaps.forEach(gap => {
-      for (let seq = gap.from; seq <= gap.to; seq++) {
-        const index = chartHist.data.labels.indexOf(seq);
-        if (index !== -1) {
-          gapsDataHist[index] = 0;
-        }
-      }
-    });
-    chartHist.data.datasets[1].data = gapsDataHist;
-    chartHist.update('none');
+    // Update historical chart gaps (only aggregated data)
+    if (chartHist.data.labels.length > 0) {
+      const maxRtt = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsDataHist = chartHist.data.labels.map(seq => {
+        // Check if this seq is in a gap
+        const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+        return isGap ? maxRtt * 1.1 : null;
+      });
+      chartHist.data.datasets[1].data = gapsDataHist;
+      chartHist.update('none');
+    }
     
-    // Update 10-minute chart gaps
-    const gapsData10 = new Array(chart10.data.labels.length).fill(null);
-    target.gaps.forEach(gap => {
-      for (let seq = gap.from; seq <= gap.to; seq++) {
-        const index = chart10.data.labels.indexOf(seq);
-        if (index !== -1) {
-          gapsData10[index] = 0;
-        }
-      }
-    });
-    chart10.data.datasets[1].data = gapsData10;
-    chart10.update('none');
+    // Update 10-minute chart gaps (only live data)
+    if (chart10.data.labels.length > 0) {
+      const maxRtt10 = Math.max(...chart10.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsData10 = chart10.data.labels.map(seq => {
+        // Check if this seq is in a gap
+        const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+        return isGap ? maxRtt10 * 1.1 : null;
+      });
+      chart10.data.datasets[1].data = gapsData10;
+      chart10.update('none');
+    }
   } else if (targetIp === "192.168.1.1") {
-    // Update historical chart gaps
-    const gapsDataHist = new Array(chartHist2.data.labels.length).fill(null);
-    target.gaps.forEach(gap => {
-      for (let seq = gap.from; seq <= gap.to; seq++) {
-        const index = chartHist2.data.labels.indexOf(seq);
-        if (index !== -1) {
-          gapsDataHist[index] = 0;
-        }
-      }
-    });
-    chartHist2.data.datasets[1].data = gapsDataHist;
-    chartHist2.update('none');
+    // Update historical chart gaps (only aggregated data)
+    if (chartHist2.data.labels.length > 0) {
+      const maxRtt = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsDataHist = chartHist2.data.labels.map(seq => {
+        // Check if this seq is in a gap
+        const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
+        return isGap ? maxRtt * 1.1 : null;
+      });
+      chartHist2.data.datasets[1].data = gapsDataHist;
+      chartHist2.update('none');
+    }
   }
 }
 

@@ -297,15 +297,7 @@ function calculateAvgRtt(target) {
     : 0;
 }
 
-// ===== Combine recent and aggregated data for client =====
-function getCombinedHistoryData(target) {
-  // Combine aggregated data + recent data, sorted by timestamp/seq
-  const combined = [...target.aggregatedData, ...target.recentData].sort((a, b) => {
-    if (a.timestamp && b.timestamp) return a.timestamp - b.timestamp;
-    return a.seq - b.seq;
-  });
-  return combined;
-}
+// No need for combined data - we send them separately
 
 // ===== HTTP server =====
 const server = http.createServer((req, res) => {
@@ -323,19 +315,21 @@ const server = http.createServer((req, res) => {
     // Add client to set
     sseClients.add(res);
 
-    // Send initial history (combined recent + aggregated)
+    // Send initial history: aggregated for historical charts, recent for 10-min chart
     res.write(`data: ${JSON.stringify({ 
       type: "history", 
       targets: {
         "1.1.1.1": {
-          historyData: getCombinedHistoryData(targets["1.1.1.1"]),
+          aggregatedData: targets["1.1.1.1"].aggregatedData, // For historical chart
+          recentData: targets["1.1.1.1"].recentData, // For 10-minute chart
           gaps: targets["1.1.1.1"].gaps,
           received: targets["1.1.1.1"].received,
           lost: targets["1.1.1.1"].lost,
           avgRtt: calculateAvgRtt(targets["1.1.1.1"])
         },
         "192.168.1.1": {
-          historyData: getCombinedHistoryData(targets["192.168.1.1"]),
+          aggregatedData: targets["192.168.1.1"].aggregatedData, // For historical chart
+          recentData: targets["192.168.1.1"].recentData, // For 10-minute chart
           gaps: targets["192.168.1.1"].gaps,
           received: targets["192.168.1.1"].received,
           lost: targets["192.168.1.1"].lost,
