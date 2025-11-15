@@ -37,7 +37,7 @@
 </table>
 
 <script>
-const ws = new WebSocket(`ws://${location.host}`);
+const eventSource = new EventSource("/events");
 
 const maxWindowMs = 10*60*1000; // 10 minutes
 const targets = {
@@ -109,8 +109,8 @@ function updateCharts(targetIp, point) {
   }
 }
 
-ws.onmessage = (msg)=>{
-  const data = JSON.parse(msg.data);
+eventSource.onmessage = (event)=>{
+  const data = JSON.parse(event.data);
 
   if(data.type==="history"){
     if (data.targets) {
@@ -149,6 +149,11 @@ ws.onmessage = (msg)=>{
     updateTable();
     updateStats();
   }
+};
+
+eventSource.onerror = (err) => {
+  console.error("SSE error:", err);
+  // EventSource will automatically try to reconnect
 };
 
 function updateStats(){

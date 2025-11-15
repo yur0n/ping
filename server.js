@@ -1,6 +1,5 @@
 const { spawn } = require("child_process");
 const express = require("express");
-const WebSocket = require("ws");
 const fs = require("fs");
 const path = require("path");
 
@@ -8,7 +7,9 @@ const app = express();
 const PORT = process.env.PORT || 5050;
 app.use(express.static("public"));
 const server = app.listen(PORT, () => console.log(`running on port ${PORT}`));
-const wss = new WebSocket.Server({ server });
+
+// SSE clients storage
+const sseClients = new Set();
 
 const HISTORY_FILE = path.join(__dirname, "history.json");
 
@@ -93,9 +94,13 @@ const ping1 = spawn("ping", ["1.1.1.1"]);
 const ping2 = spawn("ping", ["192.168.1.1"]);
 
 function broadcast(data) {
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
+  const message = `data: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try {
+      res.write(message);
+    } catch (err) {
+      console.error("Error sending SSE message:", err);
+      sseClients.delete(res);
     }
   }
 }
@@ -203,9 +208,19 @@ function calculateAvgRtt(historyData) {
     : 0;
 }
 
-// ===== Send history on new connection =====
-wss.on("connection", (ws) => {
-  ws.send(JSON.stringify({ 
+// ===== SSE endpoint =====
+app.get("/events", (req, res) => {
+  // Set SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
+  // Add client to set
+  sseClients.add(res);
+
+  // Send initial history
+  res.write(`data: ${JSON.stringify({ 
     type: "history", 
     targets: {
       "1.1.1.1": {
@@ -223,5 +238,11 @@ wss.on("connection", (ws) => {
         avgRtt: calculateAvgRtt(targets["192.168.1.1"].historyData)
       }
     }
-  }));
+  })}\n\n`);
+
+  // Handle client disconnect
+  req.on("close", () => {
+    sseClients.delete(res);
+    res.end();
+  });
 });
