@@ -28,18 +28,66 @@
 
 <h2>Gaps - 1.1.1.1</h2>
 <table id="gapsTable">
-<tr><th>from</th><th>to</th><th>count</th></tr>
+<tr><th>from</th><th>to</th><th>count</th><th>time</th></tr>
 </table>
 
 <h2>Gaps - 192.168.1.1</h2>
 <table id="gapsTable2">
-<tr><th>from</th><th>to</th><th>count</th></tr>
+<tr><th>from</th><th>to</th><th>count</th><th>time</th></tr>
 </table>
 
 <script>
 const eventSource = new EventSource("/events");
 
 const maxWindowMs = 10*60*1000; // 10 minutes
+
+// Format timestamp to time string
+function formatTime(timestamp) {
+  if (!timestamp) return "N/A";
+  const date = new Date(timestamp);
+  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// Format timestamp for chart labels (shorter format)
+function formatTimeShort(timestamp) {
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+// Find approximate timestamp for a seq number
+function findTimestampForSeq(targetIp, seq) {
+  const target = targets[targetIp];
+  if (!target) return null;
+  
+  // First check recentData
+  const recentPoint = target.last10minData.find(p => p.seq === seq);
+  if (recentPoint && recentPoint.timestamp) return recentPoint.timestamp;
+  
+  // Then check aggregatedData
+  const aggPoint = target.aggregatedData.find(p => p.seq === seq);
+  if (aggPoint && aggPoint.timestamp) return aggPoint.timestamp;
+  
+  // If not found, estimate based on nearest points
+  const allData = [...target.aggregatedData, ...target.last10minData].filter(p => p.timestamp);
+  if (allData.length === 0) return null;
+  
+  // Find closest point by seq
+  let closest = allData[0];
+  let minDiff = Math.abs(closest.seq - seq);
+  for (const point of allData) {
+    const diff = Math.abs(point.seq - seq);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = point;
+    }
+  }
+  
+  // Estimate timestamp: assume 1 second per ping
+  const seqDiff = seq - closest.seq;
+  return closest.timestamp + (seqDiff * 1000);
+}
+
 const targets = {
   "1.1.1.1": {
     last10minData: [], // Live data for 10-minute chart
@@ -152,7 +200,16 @@ function updateCharts(targetIp, point) {
     }
     const sortedSeqs10 = Array.from(allSeqs10).sort((a, b) => a - b);
     
-    chart10.data.labels = sortedSeqs10;
+    // Create labels with time
+    chart10.data.labels = sortedSeqs10.map(seq => {
+      const point = valid10minData.find(p => p.seq === seq);
+      if (point && point.timestamp) {
+        return formatTimeShort(point.timestamp);
+      }
+      // For gaps, estimate time
+      const timestamp = findTimestampForSeq(targetIp, seq);
+      return timestamp ? formatTimeShort(timestamp) : seq.toString();
+    });
     // Fill data array - null for gaps, rtt for valid data
     chart10.data.datasets[0].data = sortedSeqs10.map(seq => {
       const point = valid10minData.find(p => p.seq === seq);
@@ -198,7 +255,12 @@ eventSource.onmessage = (event)=>{
       
       // For historical chart, don't add gaps to labels to avoid large empty spaces
       // Only show gaps that are close to existing data points
-      chartHist.data.labels = validT1AggData.map(p => p.seq);
+      chartHist.data.labels = validT1AggData.map(p => {
+        if (p.timestamp) {
+          return formatTimeShort(p.timestamp);
+        }
+        return p.seq.toString();
+      });
       chartHist.data.datasets[0].data = validT1AggData.map(p => p.rtt);
       
       // Add gaps visualization - only show gaps near existing data points
@@ -208,8 +270,16 @@ eventSource.onmessage = (event)=>{
       // Find gaps that are close to existing data points (within 10 seq)
       t1.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          // Find closest data point
-          const closestIndex = chartHist.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          // Find closest data point by seq
+          let closestIndex = -1;
+          let minDiff = Infinity;
+          validT1AggData.forEach((p, idx) => {
+            const diff = Math.abs(p.seq - seq);
+            if (diff <= 10 && diff < minDiff) {
+              minDiff = diff;
+              closestIndex = idx;
+            }
+          });
           if (closestIndex !== -1) {
             // Show gap marker at the closest data point position
             gapsData1[closestIndex] = maxRtt1 * 1.1;
@@ -223,7 +293,12 @@ eventSource.onmessage = (event)=>{
       const validT2AggData = t2.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
       
       // For historical chart, don't add gaps to labels to avoid large empty spaces
-      chartHist2.data.labels = validT2AggData.map(p => p.seq);
+      chartHist2.data.labels = validT2AggData.map(p => {
+        if (p.timestamp) {
+          return formatTimeShort(p.timestamp);
+        }
+        return p.seq.toString();
+      });
       chartHist2.data.datasets[0].data = validT2AggData.map(p => p.rtt);
       
       // Add gaps visualization - only show gaps near existing data points
@@ -233,8 +308,16 @@ eventSource.onmessage = (event)=>{
       // Find gaps that are close to existing data points (within 10 seq)
       t2.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          // Find closest data point
-          const closestIndex = chartHist2.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          // Find closest data point by seq
+          let closestIndex = -1;
+          let minDiff = Infinity;
+          validT2AggData.forEach((p, idx) => {
+            const diff = Math.abs(p.seq - seq);
+            if (diff <= 10 && diff < minDiff) {
+              minDiff = diff;
+              closestIndex = idx;
+            }
+          });
           if (closestIndex !== -1) {
             // Show gap marker at the closest data point position
             gapsData2[closestIndex] = maxRtt2 * 1.1;
@@ -264,7 +347,16 @@ eventSource.onmessage = (event)=>{
       }
       const sortedSeqs10 = Array.from(allSeqs10).sort((a, b) => a - b);
       
-      chart10.data.labels = sortedSeqs10;
+      // Create labels with time
+      chart10.data.labels = sortedSeqs10.map(seq => {
+        const point = valid10minData.find(p => p.seq === seq);
+        if (point && point.timestamp) {
+          return formatTimeShort(point.timestamp);
+        }
+        // For gaps, estimate time
+        const timestamp = findTimestampForSeq("1.1.1.1", seq);
+        return timestamp ? formatTimeShort(timestamp) : seq.toString();
+      });
       // Fill data array - null for gaps, rtt for valid data
       chart10.data.datasets[0].data = sortedSeqs10.map(seq => {
         const point = valid10minData.find(p => p.seq === seq);
@@ -325,9 +417,20 @@ function updateGapsOnCharts(targetIp) {
       const gapsDataHist = new Array(chartHist.data.labels.length).fill(null);
       
       // Find gaps that are close to existing data points (within 10 seq)
+      // Need to get valid aggregated data to find closest points by seq
+      const validAggData = target.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
       target.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          const closestIndex = chartHist.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          // Find closest data point by seq
+          let closestIndex = -1;
+          let minDiff = Infinity;
+          validAggData.forEach((p, idx) => {
+            const diff = Math.abs(p.seq - seq);
+            if (diff <= 10 && diff < minDiff) {
+              minDiff = diff;
+              closestIndex = idx;
+            }
+          });
           if (closestIndex !== -1) {
             gapsDataHist[closestIndex] = maxRtt * 1.1;
           }
@@ -340,7 +443,25 @@ function updateGapsOnCharts(targetIp) {
     // Update 10-minute chart gaps (only live data) - show all gaps in range
     if (chart10.data.labels.length > 0) {
       const maxRtt10 = Math.max(...chart10.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
-      const gapsData10 = chart10.data.labels.map(seq => {
+      const valid10minData = target.last10minData.filter(p => p.rtt !== null && p.rtt !== undefined);
+      
+      // Collect all seq numbers including gaps in visible range
+      const allSeqs10 = new Set();
+      valid10minData.forEach(p => allSeqs10.add(p.seq));
+      if (valid10minData.length > 0) {
+        const minSeq = Math.min(...valid10minData.map(p => p.seq));
+        const maxSeq = Math.max(...valid10minData.map(p => p.seq));
+        target.gaps.forEach(gap => {
+          for (let seq = gap.from; seq <= gap.to; seq++) {
+            if (seq >= minSeq && seq <= maxSeq) {
+              allSeqs10.add(seq);
+            }
+          }
+        });
+      }
+      const sortedSeqs10 = Array.from(allSeqs10).sort((a, b) => a - b);
+      
+      const gapsData10 = sortedSeqs10.map(seq => {
         // Check if this seq is in a gap
         const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
         return isGap ? maxRtt10 * 1.1 : null;
@@ -355,9 +476,20 @@ function updateGapsOnCharts(targetIp) {
       const gapsDataHist = new Array(chartHist2.data.labels.length).fill(null);
       
       // Find gaps that are close to existing data points (within 10 seq)
+      // Need to get valid aggregated data to find closest points by seq
+      const validAggData2 = target.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
       target.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          const closestIndex = chartHist2.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          // Find closest data point by seq
+          let closestIndex = -1;
+          let minDiff = Infinity;
+          validAggData2.forEach((p, idx) => {
+            const diff = Math.abs(p.seq - seq);
+            if (diff <= 10 && diff < minDiff) {
+              minDiff = diff;
+              closestIndex = idx;
+            }
+          });
           if (closestIndex !== -1) {
             gapsDataHist[closestIndex] = maxRtt * 1.1;
           }
@@ -371,15 +503,25 @@ function updateGapsOnCharts(targetIp) {
 
 function updateTable(){
   const gapsTable = document.getElementById("gapsTable");
-  gapsTable.innerHTML="<tr><th>from</th><th>to</th><th>count</th></tr>";
+  gapsTable.innerHTML="<tr><th>from</th><th>to</th><th>count</th><th>time</th></tr>";
   targets["1.1.1.1"].gaps.forEach(g=>{
-    gapsTable.innerHTML+=`<tr><td>${g.from}</td><td>${g.to}</td><td>${g.count}</td></tr>`;
+    const timeFrom = findTimestampForSeq("1.1.1.1", g.from);
+    const timeTo = findTimestampForSeq("1.1.1.1", g.to);
+    const timeStr = timeFrom && timeTo 
+      ? `${formatTime(timeFrom)} - ${formatTime(timeTo)}`
+      : "N/A";
+    gapsTable.innerHTML+=`<tr><td>${g.from}</td><td>${g.to}</td><td>${g.count}</td><td>${timeStr}</td></tr>`;
   });
   
   const gapsTable2 = document.getElementById("gapsTable2");
-  gapsTable2.innerHTML="<tr><th>from</th><th>to</th><th>count</th></tr>";
+  gapsTable2.innerHTML="<tr><th>from</th><th>to</th><th>count</th><th>time</th></tr>";
   targets["192.168.1.1"].gaps.forEach(g=>{
-    gapsTable2.innerHTML+=`<tr><td>${g.from}</td><td>${g.to}</td><td>${g.count}</td></tr>`;
+    const timeFrom = findTimestampForSeq("192.168.1.1", g.from);
+    const timeTo = findTimestampForSeq("192.168.1.1", g.to);
+    const timeStr = timeFrom && timeTo 
+      ? `${formatTime(timeFrom)} - ${formatTime(timeTo)}`
+      : "N/A";
+    gapsTable2.innerHTML+=`<tr><td>${g.from}</td><td>${g.to}</td><td>${g.count}</td><td>${timeStr}</td></tr>`;
   });
 }
 </script>
