@@ -196,29 +196,25 @@ eventSource.onmessage = (event)=>{
       // Update 1.1.1.1 historical chart - only aggregated data
       const validT1AggData = t1.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
       
-      // Collect all seq numbers including gaps
-      const allSeqs = new Set();
-      validT1AggData.forEach(p => allSeqs.add(p.seq));
+      // For historical chart, don't add gaps to labels to avoid large empty spaces
+      // Only show gaps that are close to existing data points
+      chartHist.data.labels = validT1AggData.map(p => p.seq);
+      chartHist.data.datasets[0].data = validT1AggData.map(p => p.rtt);
+      
+      // Add gaps visualization - only show gaps near existing data points
+      const maxRtt1 = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsData1 = new Array(chartHist.data.labels.length).fill(null);
+      
+      // Find gaps that are close to existing data points (within 10 seq)
       t1.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          allSeqs.add(seq);
+          // Find closest data point
+          const closestIndex = chartHist.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          if (closestIndex !== -1) {
+            // Show gap marker at the closest data point position
+            gapsData1[closestIndex] = maxRtt1 * 1.1;
+          }
         }
-      });
-      const sortedSeqs = Array.from(allSeqs).sort((a, b) => a - b);
-      
-      chartHist.data.labels = sortedSeqs;
-      // Fill data array - null for gaps, rtt for valid data
-      chartHist.data.datasets[0].data = sortedSeqs.map(seq => {
-        const point = validT1AggData.find(p => p.seq === seq);
-        return point ? point.rtt : null;
-      });
-      
-      // Add gaps visualization
-      const maxRtt1 = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
-      const gapsData1 = sortedSeqs.map(seq => {
-        // Check if this seq is in a gap
-        const isGap = t1.gaps.some(gap => seq >= gap.from && seq <= gap.to);
-        return isGap ? maxRtt1 * 1.1 : null;
       });
       chartHist.data.datasets[1].data = gapsData1;
       chartHist.update('none');
@@ -226,29 +222,24 @@ eventSource.onmessage = (event)=>{
       // Update 192.168.1.1 historical chart - only aggregated data
       const validT2AggData = t2.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
       
-      // Collect all seq numbers including gaps
-      const allSeqs2 = new Set();
-      validT2AggData.forEach(p => allSeqs2.add(p.seq));
+      // For historical chart, don't add gaps to labels to avoid large empty spaces
+      chartHist2.data.labels = validT2AggData.map(p => p.seq);
+      chartHist2.data.datasets[0].data = validT2AggData.map(p => p.rtt);
+      
+      // Add gaps visualization - only show gaps near existing data points
+      const maxRtt2 = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
+      const gapsData2 = new Array(chartHist2.data.labels.length).fill(null);
+      
+      // Find gaps that are close to existing data points (within 10 seq)
       t2.gaps.forEach(gap => {
         for (let seq = gap.from; seq <= gap.to; seq++) {
-          allSeqs2.add(seq);
+          // Find closest data point
+          const closestIndex = chartHist2.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          if (closestIndex !== -1) {
+            // Show gap marker at the closest data point position
+            gapsData2[closestIndex] = maxRtt2 * 1.1;
+          }
         }
-      });
-      const sortedSeqs2 = Array.from(allSeqs2).sort((a, b) => a - b);
-      
-      chartHist2.data.labels = sortedSeqs2;
-      // Fill data array - null for gaps, rtt for valid data
-      chartHist2.data.datasets[0].data = sortedSeqs2.map(seq => {
-        const point = validT2AggData.find(p => p.seq === seq);
-        return point ? point.rtt : null;
-      });
-      
-      // Add gaps visualization
-      const maxRtt2 = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
-      const gapsData2 = sortedSeqs2.map(seq => {
-        // Check if this seq is in a gap
-        const isGap = t2.gaps.some(gap => seq >= gap.from && seq <= gap.to);
-        return isGap ? maxRtt2 * 1.1 : null;
       });
       chartHist2.data.datasets[1].data = gapsData2;
       chartHist2.update('none');
@@ -328,19 +319,25 @@ function updateGapsOnCharts(targetIp) {
   if (!target) return;
   
   if (targetIp === "1.1.1.1") {
-    // Update historical chart gaps (only aggregated data)
+    // Update historical chart gaps - only show gaps near existing data points
     if (chartHist.data.labels.length > 0) {
       const maxRtt = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
-      const gapsDataHist = chartHist.data.labels.map(seq => {
-        // Check if this seq is in a gap
-        const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
-        return isGap ? maxRtt * 1.1 : null;
+      const gapsDataHist = new Array(chartHist.data.labels.length).fill(null);
+      
+      // Find gaps that are close to existing data points (within 10 seq)
+      target.gaps.forEach(gap => {
+        for (let seq = gap.from; seq <= gap.to; seq++) {
+          const closestIndex = chartHist.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          if (closestIndex !== -1) {
+            gapsDataHist[closestIndex] = maxRtt * 1.1;
+          }
+        }
       });
       chartHist.data.datasets[1].data = gapsDataHist;
       chartHist.update('none');
     }
     
-    // Update 10-minute chart gaps (only live data)
+    // Update 10-minute chart gaps (only live data) - show all gaps in range
     if (chart10.data.labels.length > 0) {
       const maxRtt10 = Math.max(...chart10.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
       const gapsData10 = chart10.data.labels.map(seq => {
@@ -352,13 +349,19 @@ function updateGapsOnCharts(targetIp) {
       chart10.update('none');
     }
   } else if (targetIp === "192.168.1.1") {
-    // Update historical chart gaps (only aggregated data)
+    // Update historical chart gaps - only show gaps near existing data points
     if (chartHist2.data.labels.length > 0) {
       const maxRtt = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
-      const gapsDataHist = chartHist2.data.labels.map(seq => {
-        // Check if this seq is in a gap
-        const isGap = target.gaps.some(gap => seq >= gap.from && seq <= gap.to);
-        return isGap ? maxRtt * 1.1 : null;
+      const gapsDataHist = new Array(chartHist2.data.labels.length).fill(null);
+      
+      // Find gaps that are close to existing data points (within 10 seq)
+      target.gaps.forEach(gap => {
+        for (let seq = gap.from; seq <= gap.to; seq++) {
+          const closestIndex = chartHist2.data.labels.findIndex(label => Math.abs(label - seq) <= 10);
+          if (closestIndex !== -1) {
+            gapsDataHist[closestIndex] = maxRtt * 1.1;
+          }
+        }
       });
       chartHist2.data.datasets[1].data = gapsDataHist;
       chartHist2.update('none');
