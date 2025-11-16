@@ -263,29 +263,37 @@ eventSource.onmessage = (event)=>{
       });
       chartHist.data.datasets[0].data = validT1AggData.map(p => p.rtt);
       
-      // Add gaps visualization - only show gaps near existing data points
+      // Add gaps visualization - show all gaps that fall within the historical data range
       const maxRtt1 = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
       const gapsData1 = new Array(chartHist.data.labels.length).fill(null);
       
-      // Find gaps that are close to existing data points (within 10 seq)
-      t1.gaps.forEach(gap => {
-        for (let seq = gap.from; seq <= gap.to; seq++) {
-          // Find closest data point by seq
-          let closestIndex = -1;
-          let minDiff = Infinity;
-          validT1AggData.forEach((p, idx) => {
-            const diff = Math.abs(p.seq - seq);
-            if (diff <= 10 && diff < minDiff) {
-              minDiff = diff;
-              closestIndex = idx;
+      // Determine the seq range of historical data
+      if (validT1AggData.length > 0) {
+        const minSeq = Math.min(...validT1AggData.map(p => p.seq));
+        const maxSeq = Math.max(...validT1AggData.map(p => p.seq));
+        
+        // Show all gaps that overlap with the historical data range
+        t1.gaps.forEach(gap => {
+          // Check if gap overlaps with historical data range
+          if (gap.to >= minSeq && gap.from <= maxSeq) {
+            // Find the closest data point for this gap (use middle of gap)
+            const gapMiddle = Math.floor((gap.from + gap.to) / 2);
+            let closestIndex = -1;
+            let minDiff = Infinity;
+            validT1AggData.forEach((p, idx) => {
+              const diff = Math.abs(p.seq - gapMiddle);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = idx;
+              }
+            });
+            if (closestIndex !== -1) {
+              // Show gap marker at the closest data point position
+              gapsData1[closestIndex] = maxRtt1 * 1.1;
             }
-          });
-          if (closestIndex !== -1) {
-            // Show gap marker at the closest data point position
-            gapsData1[closestIndex] = maxRtt1 * 1.1;
           }
-        }
-      });
+        });
+      }
       chartHist.data.datasets[1].data = gapsData1;
       chartHist.update('none');
       
@@ -301,29 +309,37 @@ eventSource.onmessage = (event)=>{
       });
       chartHist2.data.datasets[0].data = validT2AggData.map(p => p.rtt);
       
-      // Add gaps visualization - only show gaps near existing data points
+      // Add gaps visualization - show all gaps that fall within the historical data range
       const maxRtt2 = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
       const gapsData2 = new Array(chartHist2.data.labels.length).fill(null);
       
-      // Find gaps that are close to existing data points (within 10 seq)
-      t2.gaps.forEach(gap => {
-        for (let seq = gap.from; seq <= gap.to; seq++) {
-          // Find closest data point by seq
-          let closestIndex = -1;
-          let minDiff = Infinity;
-          validT2AggData.forEach((p, idx) => {
-            const diff = Math.abs(p.seq - seq);
-            if (diff <= 10 && diff < minDiff) {
-              minDiff = diff;
-              closestIndex = idx;
+      // Determine the seq range of historical data
+      if (validT2AggData.length > 0) {
+        const minSeq = Math.min(...validT2AggData.map(p => p.seq));
+        const maxSeq = Math.max(...validT2AggData.map(p => p.seq));
+        
+        // Show all gaps that overlap with the historical data range
+        t2.gaps.forEach(gap => {
+          // Check if gap overlaps with historical data range
+          if (gap.to >= minSeq && gap.from <= maxSeq) {
+            // Find the closest data point for this gap (use middle of gap)
+            const gapMiddle = Math.floor((gap.from + gap.to) / 2);
+            let closestIndex = -1;
+            let minDiff = Infinity;
+            validT2AggData.forEach((p, idx) => {
+              const diff = Math.abs(p.seq - gapMiddle);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = idx;
+              }
+            });
+            if (closestIndex !== -1) {
+              // Show gap marker at the closest data point position
+              gapsData2[closestIndex] = maxRtt2 * 1.1;
             }
-          });
-          if (closestIndex !== -1) {
-            // Show gap marker at the closest data point position
-            gapsData2[closestIndex] = maxRtt2 * 1.1;
           }
-        }
-      });
+        });
+      }
       chartHist2.data.datasets[1].data = gapsData2;
       chartHist2.update('none');
       
@@ -411,31 +427,39 @@ function updateGapsOnCharts(targetIp) {
   if (!target) return;
   
   if (targetIp === "1.1.1.1") {
-    // Update historical chart gaps - only show gaps near existing data points
+    // Update historical chart gaps - show all gaps that fall within the historical data range
     if (chartHist.data.labels.length > 0) {
       const maxRtt = Math.max(...chartHist.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
       const gapsDataHist = new Array(chartHist.data.labels.length).fill(null);
       
-      // Find gaps that are close to existing data points (within 10 seq)
       // Need to get valid aggregated data to find closest points by seq
       const validAggData = target.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
-      target.gaps.forEach(gap => {
-        for (let seq = gap.from; seq <= gap.to; seq++) {
-          // Find closest data point by seq
-          let closestIndex = -1;
-          let minDiff = Infinity;
-          validAggData.forEach((p, idx) => {
-            const diff = Math.abs(p.seq - seq);
-            if (diff <= 10 && diff < minDiff) {
-              minDiff = diff;
-              closestIndex = idx;
+      
+      if (validAggData.length > 0) {
+        const minSeq = Math.min(...validAggData.map(p => p.seq));
+        const maxSeq = Math.max(...validAggData.map(p => p.seq));
+        
+        // Show all gaps that overlap with the historical data range
+        target.gaps.forEach(gap => {
+          // Check if gap overlaps with historical data range
+          if (gap.to >= minSeq && gap.from <= maxSeq) {
+            // Find the closest data point for this gap (use middle of gap)
+            const gapMiddle = Math.floor((gap.from + gap.to) / 2);
+            let closestIndex = -1;
+            let minDiff = Infinity;
+            validAggData.forEach((p, idx) => {
+              const diff = Math.abs(p.seq - gapMiddle);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = idx;
+              }
+            });
+            if (closestIndex !== -1) {
+              gapsDataHist[closestIndex] = maxRtt * 1.1;
             }
-          });
-          if (closestIndex !== -1) {
-            gapsDataHist[closestIndex] = maxRtt * 1.1;
           }
-        }
-      });
+        });
+      }
       chartHist.data.datasets[1].data = gapsDataHist;
       chartHist.update('none');
     }
@@ -470,31 +494,39 @@ function updateGapsOnCharts(targetIp) {
       chart10.update('none');
     }
   } else if (targetIp === "192.168.1.1") {
-    // Update historical chart gaps - only show gaps near existing data points
+    // Update historical chart gaps - show all gaps that fall within the historical data range
     if (chartHist2.data.labels.length > 0) {
       const maxRtt = Math.max(...chartHist2.data.datasets[0].data.filter(v => v !== null && v !== undefined), 0) || 100;
       const gapsDataHist = new Array(chartHist2.data.labels.length).fill(null);
       
-      // Find gaps that are close to existing data points (within 10 seq)
       // Need to get valid aggregated data to find closest points by seq
       const validAggData2 = target.aggregatedData.filter(p => p.rtt !== null && p.rtt !== undefined);
-      target.gaps.forEach(gap => {
-        for (let seq = gap.from; seq <= gap.to; seq++) {
-          // Find closest data point by seq
-          let closestIndex = -1;
-          let minDiff = Infinity;
-          validAggData2.forEach((p, idx) => {
-            const diff = Math.abs(p.seq - seq);
-            if (diff <= 10 && diff < minDiff) {
-              minDiff = diff;
-              closestIndex = idx;
+      
+      if (validAggData2.length > 0) {
+        const minSeq = Math.min(...validAggData2.map(p => p.seq));
+        const maxSeq = Math.max(...validAggData2.map(p => p.seq));
+        
+        // Show all gaps that overlap with the historical data range
+        target.gaps.forEach(gap => {
+          // Check if gap overlaps with historical data range
+          if (gap.to >= minSeq && gap.from <= maxSeq) {
+            // Find the closest data point for this gap (use middle of gap)
+            const gapMiddle = Math.floor((gap.from + gap.to) / 2);
+            let closestIndex = -1;
+            let minDiff = Infinity;
+            validAggData2.forEach((p, idx) => {
+              const diff = Math.abs(p.seq - gapMiddle);
+              if (diff < minDiff) {
+                minDiff = diff;
+                closestIndex = idx;
+              }
+            });
+            if (closestIndex !== -1) {
+              gapsDataHist[closestIndex] = maxRtt * 1.1;
             }
-          });
-          if (closestIndex !== -1) {
-            gapsDataHist[closestIndex] = maxRtt * 1.1;
           }
-        }
-      });
+        });
+      }
       chartHist2.data.datasets[1].data = gapsDataHist;
       chartHist2.update('none');
     }
